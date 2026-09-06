@@ -18,7 +18,7 @@ Image format conversion API built on [Jimp](https://jimp-dev.github.io/jimp/), d
 ```bash
 npm install
 npm run build
-npm start          # listens on PORT (default 7428)
+npm start          # listens on PORT (default 3028)
 # or for development with auto-reload:
 npm run dev
 ```
@@ -30,7 +30,7 @@ npm run dev
 Returns the supported input MIME types and output formats (with their available options). Useful for clients (like n8n) to discover what's available.
 
 ```bash
-curl http://localhost:7428/v1/formats
+curl http://localhost:3028/v1/formats
 ```
 
 ### `GET /health`
@@ -38,7 +38,7 @@ curl http://localhost:7428/v1/formats
 Liveness probe.
 
 ```bash
-curl http://localhost:7428/health
+curl http://localhost:3028/health
 ```
 
 ### `POST /v1/convert`
@@ -58,8 +58,8 @@ The input format is **always auto-detected** from the file's magic bytes — no 
 The file part can use **any** of these field names: `file` (default), `data` (n8n default), or `image`.
 
 ```bash
-curl -X POST http://localhost:7428/v1/convert \
-  -F "data=@input.png" \
+curl -X POST http://localhost:3028/v1/convert \
+  -F "data=@input.png" \ 
   -F "format=jpeg" \
   -F "quality=85" \
   -F "width=800" \
@@ -70,7 +70,7 @@ curl -X POST http://localhost:7428/v1/convert \
 Or, URL-driven (all options as query params, only the binary in the body):
 
 ```bash
-curl -X POST "http://localhost:7428/v1/convert?format=jpeg&quality=85&width=800&background=%23ffffff" \
+curl -X POST "http://localhost:3028/v1/convert?format=jpeg&quality=85&width=800&background=%23ffffff" \ 
   -F "data=@input.png" \
   -o output.jpg
 ```
@@ -141,7 +141,7 @@ The `X-Input-*` headers expose the **auto-detected** input format and dimensions
 For workflows that want the converted image wrapped in JSON (e.g. to pass through other JSON-only nodes), add `?response=base64`:
 
 ```bash
-curl -X POST "http://localhost:7428/v1/convert?format=jpeg&response=base64&width=800" \
+curl -X POST "http://localhost:3028/v1/convert?format=jpeg&response=base64&width=800" \ 
   -F "data=@input.png"
 ```
 
@@ -206,7 +206,7 @@ All settings are environment variables (loaded from `.env` via `dotenv`):
 
 | Variable        | Default       | Description                          |
 |-----------------|---------------|--------------------------------------|
-| `PORT`          | `3000`        | HTTP port                            |
+| `PORT`          | `3028`        | HTTP port                            |
 | `HOST`          | `0.0.0.0`     | Bind address                         |
 | `MAX_FILE_SIZE` | `20971520`    | Max upload size in bytes (20 MB)     |
 | `LOG_LEVEL`     | `info`        | Pino log level                       |
