@@ -15,12 +15,11 @@
 
 import { readFileSync } from "node:fs";
 import type { FastifyInstance } from "fastify";
-import { Jimp } from "jimp";
+import sharp from "sharp";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
-// The stock `jimp` bundle cannot decode AVIF; the custom instance can.
-import { Jimp as AvifJimp } from "../src/services/jimp.js";
+
 import { FIXTURES, ensureFixtures } from "./setup.js";
 
 let app: FastifyInstance;
@@ -57,7 +56,7 @@ describe("GET /v1/formats", () => {
     );
 
     const outputKeys = res.body.outputs.map((o: { key: string }) => o.key);
-    expect(outputKeys).toEqual(["png", "jpeg", "bmp", "tiff", "gif", "avif"]);
+    expect(outputKeys).toEqual(["png", "jpeg", "tiff", "gif", "avif", "webp"]);
 
     const jpeg = res.body.outputs.find((o: { key: string }) => o.key === "jpeg");
     expect(jpeg.options).toContain("quality");
@@ -98,7 +97,6 @@ describe("POST /v1/convert (multipart)", () => {
   const expectedMimes: Record<string, string> = {
     png: "image/png",
     jpeg: "image/jpeg",
-    bmp: "image/bmp",
     tiff: "image/tiff",
     gif: "image/gif",
   };
@@ -119,11 +117,31 @@ describe("POST /v1/convert (multipart)", () => {
       expect(res.body.length).toBeGreaterThan(0);
 
       // Verify the output is actually a decodable image of the requested MIME.
-      const decoded = await Jimp.read(res.body);
-      expect(decoded.bitmap.width).toBe(16);
-      expect(decoded.bitmap.height).toBe(16);
+      if (format === "webp") {
+        const meta = await sharp(res.body).metadata();
+        expect(meta.format).toBe("webp");
+      } else {
+            const meta = await sharp(res.body).metadata();
+        expect(meta.width).toBe(16);
+        expect(meta.height).toBe(16);
+      }
     });
   }
+
+  it("converts PNG to WebP", async () => {
+    const res = await request(app.server)
+      .post("/v1/convert")
+      .attach("file", FIXTURES.png)
+      .field("format", "webp");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("image/webp");
+    expect(res.body.length).toBeGreaterThan(0);
+
+    // Verify WebP decoding via sharp.
+    const decoded = await sharp(res.body).metadata();
+    expect(decoded.format).toBe("webp");
+  });
 
   it("respects the quality option for JPEG", async () => {
     const lowQ = await request(app.server)
@@ -168,9 +186,9 @@ describe("POST /v1/convert (multipart)", () => {
     expect(res.headers["x-output-width"]).toBe("64");
     expect(res.headers["x-output-height"]).toBe("32");
 
-    const decoded = await Jimp.read(res.body);
-    expect(decoded.bitmap.width).toBe(64);
-    expect(decoded.bitmap.height).toBe(32);
+    const meta = await sharp(res.body).metadata();
+    expect(meta.width).toBe(64);
+    expect(meta.height).toBe(32);
   });
 
   it("resizes preserving aspect ratio when only width is given", async () => {
@@ -196,9 +214,9 @@ describe("POST /v1/convert (multipart)", () => {
     expect(res.headers["content-type"]).toBe("image/jpeg");
 
     // Re-decode the JPEG and confirm the alpha channel is gone (no transparency).
-    const decoded = await Jimp.read(res.body);
-    // For JPEG, Jimp's bitmap should be RGB (no alpha).
-    expect(decoded.hasAlpha()).toBe(false);
+    const meta = await sharp(res.body).metadata();
+    // For JPEG, output should not have alpha.
+    expect(meta.hasAlpha ?? false).toBe(false);
   });
 });
 
@@ -218,8 +236,8 @@ describe("POST /v1/convert (JSON base64)", () => {
     expect(res.headers["content-type"]).toBe("image/png");
     expect(res.headers["x-output-width"]).toBe("8");
 
-    const decoded = await Jimp.read(res.body);
-    expect(decoded.bitmap.width).toBe(8);
+    const meta = await sharp(res.body).metadata();
+    expect(meta.width).toBe(8);
   });
 
   it("accepts a data URL with media type", async () => {
@@ -258,14 +276,18 @@ describe("POST /v1/convert error paths", () => {
     expect(res.body.title).toBe("Bad request");
   });
 
-  it("returns 415 for unsupported output format", async () => {
+  it("converts PNG to WebP", async () => {
     const res = await request(app.server)
       .post("/v1/convert")
       .attach("file", FIXTURES.png)
       .field("format", "webp");
 
-    expect(res.status).toBe(415);
-    expect(res.body.title).toBe("Unsupported output format");
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("image/webp");
+    expect(res.body.length).toBeGreaterThan(0);
+
+    const meta = await sharp(res.body).metadata();
+    expect(meta.format).toBe("webp");
   });
 
   it("returns 400 for invalid quality range", async () => {
@@ -396,12 +418,13 @@ describe("n8n integration — ?format= query parameter", () => {
     expect(res.body.detail).toMatch(/format/i);
   });
 
-  it("returns 415 for unsupported format in query string", async () => {
+  it("converts PNG to WebP via query string", async () => {
     const res = await request(app.server)
       .post("/v1/convert?format=webp")
       .attach("data", FIXTURES.png);
 
-    expect(res.status).toBe(415);
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("image/webp");
   });
 });
 
@@ -487,8 +510,8 @@ describe("n8n integration — ?response=base64 JSON output mode", () => {
     expect(res.body.data.length).toBeGreaterThan(0);
 
     // The base64 should round-trip to a valid image of the requested type.
-    const decoded = await Jimp.read(Buffer.from(res.body.data, "base64"));
-    expect(decoded.bitmap.width).toBe(16);
+    const meta = await sharp(Buffer.from(res.body.data, "base64")).metadata();
+    expect(meta.width).toBe(16);
 
     expect(res.body.input.mime).toBe("image/png");
     expect(res.body.input.width).toBe(16);
@@ -503,8 +526,8 @@ describe("n8n integration — ?response=base64 JSON output mode", () => {
     expect(res.status).toBe(200);
     expect(res.body.output.width).toBe(64);
 
-    const decoded = await Jimp.read(Buffer.from(res.body.data, "base64"));
-    expect(decoded.bitmap.width).toBe(64);
+    const meta = await sharp(Buffer.from(res.body.data, "base64")).metadata();
+    expect(meta.width).toBe(64);
   });
 
   it("returns JSON with validation errors when format is missing", async () => {
@@ -546,10 +569,9 @@ describe("AVIF — input support", () => {
     expect(res.headers["content-type"]).toBe("image/jpeg");
     expect(res.body.length).toBeGreaterThan(0);
 
-    // The output JPEG must itself be a valid decodable image.
-    const decoded = await Jimp.read(res.body);
-    expect(decoded.bitmap.width).toBe(16);
-    expect(decoded.bitmap.height).toBe(16);
+    const meta = await sharp(res.body).metadata();
+    expect(meta.width).toBe(16);
+    expect(meta.height).toBe(16);
   });
 
   it("converts AVIF → TIFF", async () => {
@@ -601,9 +623,9 @@ describe("AVIF — output support", () => {
     expect(res.body.length).toBeGreaterThan(0);
 
     // The output must be a valid AVIF that we can decode again.
-    const decoded = await AvifJimp.read(res.body);
-    expect(decoded.bitmap.width).toBe(16);
-    expect(decoded.bitmap.height).toBe(16);
+    const meta = await sharp(res.body).metadata();
+    expect(meta.width).toBe(16);
+    expect(meta.height).toBe(16);
   });
 
   it("encodes JPEG → AVIF", async () => {
@@ -645,7 +667,7 @@ describe("AVIF — output support", () => {
     expect(res.body.mime).toBe("image/avif");
     expect(res.body.extension).toBe("avif");
 
-    const decoded = await AvifJimp.read(Buffer.from(res.body.data, "base64"));
-    expect(decoded.bitmap.width).toBe(16);
+    const meta = await sharp(Buffer.from(res.body.data, "base64")).metadata();
+    expect(meta.width).toBe(16);
   });
 });

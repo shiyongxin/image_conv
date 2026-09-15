@@ -1,29 +1,33 @@
 /**
  * Test fixture generator.
  *
- * Runs before the test suite to produce small PNG/JPEG/BMP/GIF/TIFF/AVIF
+ * Runs before the test suite to produce small PNG/JPEG/GIF/TIFF/AVIF
  * samples inside tests/fixtures/. We generate fixtures programmatically
- * with Jimp itself rather than committing binary blobs to the repo.
+ * with sharp rather than committing binary blobs to the repo.
  *
- * IMPORTANT: the AVIF fixture requires the custom Jimp instance from
- * src/services/jimp.ts (the bundled `jimp` package does NOT include AVIF).
+ * IMPORTANT: fixtures are generated using sharp (native libvips) so AVIF/WebP
+ * tests use the same engine stack as the API.
  */
 
 import { existsSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Jimp as StockJimp } from "jimp";
-import { Jimp } from "../src/services/jimp.js";
+import sharp from "sharp";
+import type { Metadata } from "sharp";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
 const FIXTURES_DIR = resolve(__dirname, "fixtures");
 
-type SupportedMime = "image/png" | "image/jpeg" | "image/bmp" | "image/gif" | "image/tiff" | "image/avif";
+type SupportedMime =
+  | "image/png"
+  | "image/jpeg"
+  | "image/gif"
+  | "image/tiff"
+  | "image/avif";
 
 const FILES: Array<{ name: string; mime: SupportedMime; alpha?: boolean }> = [
   { name: "sample.png", mime: "image/png" },
   { name: "sample.jpg", mime: "image/jpeg" },
-  { name: "sample.bmp", mime: "image/bmp" },
   { name: "sample.gif", mime: "image/gif" },
   { name: "sample.tiff", mime: "image/tiff" },
   { name: "sample.avif", mime: "image/avif" },
@@ -40,31 +44,59 @@ async function makeImage(
   mime: SupportedMime,
   alpha: boolean,
 ): Promise<void> {
-  // AVIF needs the custom Jimp (with the custom AVIF plugin); everything else
-  // can use the stock bundle.
-  const jimp = mime === "image/avif" ? Jimp : StockJimp;
+  // Create a 16x16 raw RGBA buffer (BGRA is not used; sharp expects RGBA here).
+  const width = 16;
+  const height = 16;
+  const rgba = Buffer.alloc(width * height * 4);
 
-  const image = new jimp({
-    width: 16,
-    height: 16,
-    color: alpha ? 0x80808080 : 0xff3366cc, // ARGB int
-  });
-  // Paint some red dots in the corners so we have visible content.
-  const red = 0xffff0000;
-  image.setPixelColor(red, 0, 0);
-  image.setPixelColor(red, 15, 0);
-  image.setPixelColor(red, 0, 15);
-  image.setPixelColor(red, 15, 15);
+  // Base color: #33 66 cc (RGB) with optional alpha.
+  const baseR = 0x33;
+  const baseG = 0x66;
+  const baseB = 0xcc;
+  const baseA = alpha ? 0x80 : 0xff;
 
-  if (alpha) {
-    // Make a few pixels semi-transparent so JPEG conversion would lose data.
-    const half = 0x80000000;
-    image.setPixelColor(half, 4, 4);
-    image.setPixelColor(half, 8, 8);
-    image.setPixelColor(half, 12, 12);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      rgba[i] = baseR;
+      rgba[i + 1] = baseG;
+      rgba[i + 2] = baseB;
+      rgba[i + 3] = baseA;
+    }
   }
 
-  await image.write(path as `${string}.${string}`);
+  // Red corners.
+  const setPixel = (x: number, y: number, r: number, g: number, b: number, a: number) => {
+    const i = (y * width + x) * 4;
+    rgba[i] = r;
+    rgba[i + 1] = g;
+    rgba[i + 2] = b;
+    rgba[i + 3] = a;
+  };
+
+  const red = { r: 0xff, g: 0x00, b: 0x00 };
+  setPixel(0, 0, red.r, red.g, red.b, 0xff);
+  setPixel(15, 0, red.r, red.g, red.b, 0xff);
+  setPixel(0, 15, red.r, red.g, red.b, 0xff);
+  setPixel(15, 15, red.r, red.g, red.b, 0xff);
+
+  if (alpha) {
+    // Semi-transparent diagonal pixels.
+    const halfA = 0x80;
+    setPixel(4, 4, baseR, baseG, baseB, halfA);
+    setPixel(8, 8, baseR, baseG, baseB, halfA);
+    setPixel(12, 12, baseR, baseG, baseB, halfA);
+  }
+
+  const img = sharp(rgba, { raw: { width, height, channels: 4 } });
+
+  if (mime === "image/png") await img.png().toFile(path);
+  else if (mime === "image/jpeg") await img.jpeg().toFile(path);
+
+  else if (mime === "image/gif") await img.gif().toFile(path);
+  else if (mime === "image/tiff") await img.tiff().toFile(path);
+  else if (mime === "image/avif") await img.avif().toFile(path);
+  else throw new Error(`Unsupported fixture mime: ${mime}`);
 }
 
 export async function ensureFixtures(): Promise<void> {
@@ -82,7 +114,6 @@ export async function ensureFixtures(): Promise<void> {
 export const FIXTURES = {
   png: resolve(FIXTURES_DIR, "sample.png"),
   jpeg: resolve(FIXTURES_DIR, "sample.jpg"),
-  bmp: resolve(FIXTURES_DIR, "sample.bmp"),
   gif: resolve(FIXTURES_DIR, "sample.gif"),
   tiff: resolve(FIXTURES_DIR, "sample.tiff"),
   avif: resolve(FIXTURES_DIR, "sample.avif"),

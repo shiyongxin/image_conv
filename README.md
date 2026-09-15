@@ -1,11 +1,10 @@
 # image-conv
 
-Image format conversion API built on [Jimp](https://jimp-dev.github.io/jimp/), designed for integration with **n8n** workflow automation and any HTTP client.
+Image format conversion API built on [sharp](https://sharp.pixelplumbing.com/) (native libvips), designed for integration with **n8n** workflow automation and any HTTP client.
 
 ## Features
 
-- Convert images between **PNG, JPEG, BMP, TIFF, GIF, AVIF** in any direction
-- Read **WebP** as input (decoded but not re-encoded — see Limitations)
+- Convert images between **PNG, JPEG, BMP, TIFF, GIF, AVIF, WebP** in any direction
 - Optional **resize** during conversion (width / height / aspect ratio)
 - Optional **quality** (JPEG/TIFF) and **deflateLevel** (PNG) tuning
 - **JPEG alpha flattening** — transparent pixels are composited onto a configurable background color
@@ -80,7 +79,7 @@ Fields:
 | Field          | Required | Description                                     |
 |----------------|----------|-------------------------------------------------|
 | `data`/`file`/`image` | yes | The image file (any of these field names)       |
-| `format`       | yes¹     | Target format: `png`, `jpeg`, `bmp`, `tiff`, `gif`, `avif` |
+| `format`       | yes¹     | Target format: `png`, `jpeg`, `tiff`, `gif`, `avif`, `webp` |
 | `quality`      | no       | JPEG/TIFF quality 1–100 (default 85)            |
 | `deflateLevel` | no       | PNG compression 0–9 (default 6)                 |
 | `width`        | no       | Resize to this width in pixels                  |
@@ -168,7 +167,7 @@ All errors use an RFC 7807-style JSON envelope:
   "type": "https://api.example.com/errors/unsupported-format",
   "title": "Unsupported output format",
   "status": 415,
-  "detail": "Unsupported output format 'webp'. Supported: png, jpeg, bmp, tiff, gif",
+  "detail": "Unsupported output format 'bmp'. Supported: png, jpeg, tiff, gif, avif, webp",
   "instance": "/v1/convert"
 }
 ```
@@ -183,21 +182,18 @@ All errors use an RFC 7807-style JSON envelope:
 
 ## Supported formats
 
-| Direction  | PNG | JPEG | BMP | TIFF | GIF | AVIF |
-|------------|-----|------|-----|------|-----|------|
-| Read       | ✅  | ✅   | ✅  | ✅   | ✅  | ✅   |
-| Write      | ✅  | ✅   | ✅  | ✅   | ✅  | ✅   |
-| Read input | ✅  | ✅   | ✅  | ✅   | ✅  | ✅   |
+| Direction  | PNG | JPEG | TIFF | GIF | AVIF | WebP |
+|------------|-----|------|------|-----|------|------|
+| Read       | ✅  | ✅   | ✅   | ✅  | ✅   | ✅   |
+| Write      | ✅  | ✅   | ✅   | ✅  | ✅   | ✅   |
+| Read input | ✅  | ✅   | ✅   | ✅  | ✅   | ✅   |
 
-WebP is **read** as input but **cannot be written** by Jimp. Requests for `format=webp` (or any unsupported format) return 415.
-
-AVIF is supported via a custom WebAssembly plugin (see [src/services/avif-plugin.ts](src/services/avif-plugin.ts)) layered on top of the default Jimp formats. Encoding is slower than the bundled formats because it runs through WASM.
+All formats are read/write natively via sharp (libvips C/C++ bindings), with no WebAssembly overhead. BMP is readable as input.
 
 ## Limitations
 
-- **WebP encoding is not supported** — Jimp has no native WebP encoder. To add WebP output, swap to `sharp` or `@cwasm/webp`.
-- **AVIF encoding is WASM-backed and slower** — each encode/decode initialises a WebAssembly module (cached after the first call), so throughput is lower than the bundled formats.
-- **In-memory only** — Jimp holds the full image as an RGBA buffer, so very large images (>8000×8000) are rejected by default. Adjust `MAX_WIDTH` / `MAX_HEIGHT` in `src/config/formats.ts` if you need larger inputs.
+- **BMP write is not supported** — sharp (libvips) can decode BMP as an input, but has no BMP encoder, so `format=bmp` returns 415.
+- **Dimension safety** — images are held in memory; `MAX_WIDTH` / `MAX_HEIGHT` ceilings (default 8000×8000) prevent OOM. Adjust in `src/config/formats.ts` if you need larger inputs.
 - **GIF animation is flattened** — multi-frame GIFs are decoded as their first frame.
 
 ## Configuration

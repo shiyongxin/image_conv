@@ -33,8 +33,7 @@ export async function formatsRoutes(app: FastifyInstance): Promise<void> {
         maxHeight: MAX_HEIGHT,
       },
       notes: [
-        "WebP is supported as INPUT only — Jimp has no WebP encoder.",
-        "AVIF is supported via a custom WebAssembly plugin (slower than the bundled formats).",
+        "All formats (including WebP and AVIF) are supported for both input and output via sharp (native libvips).",
         "When converting to JPEG, any alpha channel is flattened onto the background color (default #ffffff).",
       ],
     };

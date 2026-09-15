@@ -1,9 +1,9 @@
 /**
  * Single source of truth for supported image formats.
  *
- * Jimp v1.x natively supports read+write for: PNG, JPEG, BMP, TIFF, GIF.
- * WebP is read-only (no native encoder). AVIF is added via a custom plugin
- * (loaded in src/services/jimp.ts).
+ * sharp (libvips) natively supports read+write for: PNG, JPEG, TIFF, GIF,
+ * AVIF, WebP. BMP is readable as input (libvips decodes), but sharp has no
+ * BMP encoder, so it is not part of OUTPUT_FORMATS.
  *
  * This module exposes:
  *  - SUPPORTED_INPUT_MIMES: MIME types we can decode
@@ -27,8 +27,8 @@ export const SUPPORTED_INPUT_MIMES: readonly string[] = [
   "image/bmp",
   "image/tiff",
   "image/gif",
-  "image/webp", // read-only on output side
-  "image/avif", // via the custom plugin loaded in src/services/jimp.ts
+  "image/webp",
+  "image/avif",
 ] as const;
 
 /**
@@ -46,11 +46,6 @@ export const OUTPUT_FORMATS: Record<string, OutputFormatInfo> = {
     extension: "jpg",
     options: ["quality"],
   },
-  bmp: {
-    mime: "image/bmp",
-    extension: "bmp",
-    options: [],
-  },
   tiff: {
     mime: "image/tiff",
     extension: "tiff",
@@ -61,13 +56,14 @@ export const OUTPUT_FORMATS: Record<string, OutputFormatInfo> = {
     extension: "gif",
     options: [],
   },
-  // AVIF — provided by the custom plugin loaded in src/services/jimp.ts.
-  // Encodes via WASM, so it's slower than the bundled formats. We expose a
-  // `quality` knob that maps to the libavif `cqLevel` quantization parameter
-  // (lower = better, inverted from JPEG's scale).
   avif: {
     mime: "image/avif",
     extension: "avif",
+    options: ["quality"],
+  },
+  webp: {
+    mime: "image/webp",
+    extension: "webp",
     options: ["quality"],
   },
 };

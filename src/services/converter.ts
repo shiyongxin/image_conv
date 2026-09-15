@@ -1,41 +1,67 @@
 /**
  * Framework-agnostic image conversion service.
  *
- * Uses our custom Jimp instance (which adds AVIF support on top of the
- * default PNG/JPEG/BMP/TIFF/GIF/WebP formats) to read, transform, and
- * re-encode images. All operations happen in-memory; the caller is
- * responsible for stream/buffer lifecycle on the HTTP side.
+ * Uses sharp (native libvips bindings) to decode/transform/encode images.
  */
 
+import sharp from "sharp";
+import type { Metadata, Sharp } from "sharp";
 import {
   DEFAULT_DEFLATE_LEVEL,
   DEFAULT_JPEG_BACKGROUND,
   DEFAULT_QUALITY,
   MAX_HEIGHT,
   MAX_WIDTH,
-  OutputFormatInfo,
   resolveOutputFormat,
 } from "../config/formats.js";
-import { Jimp } from "./jimp.js";
 
-/**
- * Minimal structural type for the Jimp instance methods we use internally.
- * Jimp's published types split the constructor and the read/fromBuffer
- * return types into two structurally similar but nominally distinct shapes,
- * which makes them hard to unify. Using a structural alias here keeps the
- * helpers decoupled from those quirks while still type-checking.
- */
-interface JimpLike {
-  bitmap: { data: Buffer; width: number; height: number };
-  getBuffer(mime: string, options?: Record<string, unknown>): Promise<Buffer>;
-  composite(src: JimpLike, x: number, y: number): JimpLike;
-  resize(opts: { w?: number; h?: number }): JimpLike;
-  hasAlpha(): boolean;
+type SharpMetadata = Metadata;
+
+function hexToSharpColor(hex: string): { r: number; g: number; b: number } {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return { r, g, b };
 }
 
-/** Helper that turns any Jimp-compatible value into our internal shape. */
-function asJimpLike(image: unknown): JimpLike {
-  return image as JimpLike;
+function applyResize(
+  pipeline: Sharp,
+  width?: number,
+  height?: number,
+): Sharp {
+  if (width !== undefined && height !== undefined) {
+    return pipeline.resize({ width, height, fit: "fill" });
+  } else if (width !== undefined) {
+    return pipeline.resize({ width, fit: "inside" });
+  } else if (height !== undefined) {
+    return pipeline.resize({ height, fit: "inside" });
+  }
+  return pipeline;
+}
+
+function applyOutputFormat(
+  pipeline: Sharp,
+  mime: string,
+  opts: NormalizedOptions,
+): Sharp {
+  switch (mime) {
+    case "image/jpeg":
+      return pipeline.jpeg({ quality: opts.quality });
+    case "image/png":
+      return pipeline.png({ compressionLevel: opts.deflateLevel });
+    case "image/webp":
+      return pipeline.webp({ quality: opts.quality });
+    case "image/avif":
+      // sharp uses higher = better (it maps to libavif quality internally)
+      return pipeline.avif({ quality: opts.quality });
+    case "image/tiff":
+      return pipeline.tiff({ quality: opts.quality });
+
+    case "image/gif":
+      return pipeline.gif();
+    default:
+      return pipeline;
+  }
 }
 
 export interface ConvertOptions {
@@ -70,7 +96,7 @@ export interface ConvertResult {
   mime: string;
   /** File extension (no leading dot) for Content-Disposition. */
   extension: string;
-  /** Detected MIME type of the source image (auto-detected by Jimp from bytes). */
+  /** Detected MIME type of the source image (auto-detected by sharp from bytes). */
   inputMime: string;
   /** Source image width in pixels. */
   sourceWidth: number;
@@ -117,57 +143,49 @@ export async function convertImage(input: ConvertInput): Promise<ConvertResult> 
   const format = resolveOutputFormat(input.outputFormat);
   const opts = normalizeOptions(input.options);
 
-  let image: JimpLike;
+  let pipeline = sharp(input.buffer);
+  let metadata: SharpMetadata;
   try {
-    image = asJimpLike(await Jimp.read(input.buffer));
+    metadata = await pipeline.metadata();
   } catch (err) {
     throw new ImageProcessingError(
       "Failed to decode input image. The file may be corrupt or in an unsupported format.",
-      err
+      err,
     );
   }
 
-  enforceDimensionLimits(image.bitmap.width, image.bitmap.height);
-
-  // Capture the input MIME that Jimp detected from the file's magic bytes.
-  // We cast through unknown because the read/fromBuffer types in v1.x expose
-  // `mime` as an optional property on the instance.
-  const inputMime: string =
-    (image as unknown as { mime?: string }).mime ?? "unknown";
-
-  const sourceWidth = image.bitmap.width;
-  const sourceHeight = image.bitmap.height;
-
-  // 1. Flatten alpha channel if we're encoding to a format that doesn't
-  //    support transparency (JPEG, BMP). We do this by compositing the
-  //    image onto a solid-color canvas.
-  if (needsAlphaFlatten(format.mime) && hasTransparency(image)) {
-    image = flattenAlpha(image, opts.background);
+  const sourceWidth = metadata.width ?? 0;
+  const sourceHeight = metadata.height ?? 0;
+  if (!metadata.width || !metadata.height) {
+    throw new ImageProcessingError("Failed to read image dimensions from input.");
   }
 
-  // 2. Resize if requested.
-  if (opts.width !== undefined || opts.height !== undefined) {
-    image = applyResize(image, opts.width, opts.height);
+  enforceDimensionLimits(sourceWidth, sourceHeight);
+
+  const inputMime = metadata.format
+    ? metadata.mediaType
+      ? metadata.mediaType
+      : formatToInputMime(metadata.format)
+    : "unknown";
+
+  // Flatten alpha when encoding to non-alpha formats.
+  if (needsAlphaFlatten(format.mime) && metadata.hasAlpha) {
+    pipeline = pipeline.flatten({ background: hexToSharpColor(opts.background) });
   }
 
-  const outputWidth = image.bitmap.width;
-  const outputHeight = image.bitmap.height;
+  pipeline = applyResize(pipeline, opts.width, opts.height);
 
-  // 3. Encode with format-specific tuning passed as options.
-  //    Jimp v1.x dropped the chainable .quality() / .deflateLevel() helpers
-  //    in favor of passing these options to getBuffer() directly.
-  const encodeOptions = buildEncodeOptions(format.mime, opts);
+  pipeline = applyOutputFormat(pipeline, format.mime, opts);
+
   let buffer: Buffer;
   try {
-    buffer = encodeOptions
-      ? await image.getBuffer(format.mime, encodeOptions)
-      : await image.getBuffer(format.mime);
+    buffer = await pipeline.toBuffer();
   } catch (err) {
-    throw new ImageProcessingError(
-      `Failed to encode output as ${format.mime}.`,
-      err
-    );
+    throw new ImageProcessingError(`Failed to encode output as ${format.mime}.`, err);
   }
+
+  // Determine output dimensions from the encoded buffer.
+  const outMeta = await sharp(buffer).metadata();
 
   return {
     buffer,
@@ -176,8 +194,8 @@ export async function convertImage(input: ConvertInput): Promise<ConvertResult> 
     inputMime,
     sourceWidth,
     sourceHeight,
-    outputWidth,
-    outputHeight,
+    outputWidth: outMeta.width ?? 0,
+    outputHeight: outMeta.height ?? 0,
   };
 }
 
@@ -237,97 +255,24 @@ function enforceDimensionLimits(width: number, height: number): void {
  * background before encoding.
  */
 function needsAlphaFlatten(mime: string): boolean {
-  return mime === "image/jpeg" || mime === "image/bmp";
+  return mime === "image/jpeg";
 }
 
 /**
  * Scan the RGBA bitmap for any non-opaque pixel. We bail out early on the
  * first hit — images with alpha typically have it everywhere.
  */
-function hasTransparency(image: JimpLike): boolean {
-  const data = image.bitmap.data;
-  const len = data.length;
-  // RGBA: stride of 4 bytes per pixel.
-  for (let i = 3; i < len; i += 4) {
-    if (data[i] !== 255) return true;
-  }
-  return false;
-}
-
-/**
- * Composite the image onto a solid-color canvas of the same size. Returns
- * a new Jimp instance without alpha.
- */
-function flattenAlpha(image: JimpLike, backgroundHex: string): JimpLike {
-  const { width, height } = image.bitmap;
-  // Create a canvas filled with the requested background color.
-  // We cast through unknown because the Jimp constructor type and the
-  // read/fromBuffer type are nominally distinct in v1.x despite sharing
-  // most methods. Both produce instances with composite() / getBuffer().
-  const canvas = asJimpLike(
-    new Jimp({
-      width,
-      height,
-      color: hexToRgba(backgroundHex),
-    })
-  );
-  // Composite the original image on top — Jimp handles the alpha blending.
-  canvas.composite(image, 0, 0);
-  return canvas;
-}
-
-/**
- * Parse "#rrggbb" into a 32-bit RGBA integer suitable for Jimp v1.x color setters.
- * Returns ARGB packed into 0xAARRGGBB (where AA=0xFF for opaque).
- */
-function hexToRgba(hex: string): number {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  return ((0xff << 24) | (r << 16) | (g << 8) | b) >>> 0;
-}
-
-/**
- * Apply resize. In Jimp v1.x the resize method accepts either
- * `{ w, h? }` or `{ h, w? }` (one dimension required). If only one is given,
- * the plugin computes the other to preserve aspect ratio.
- */
-function applyResize(image: JimpLike, width?: number, height?: number): JimpLike {
-  if (width !== undefined && height !== undefined) {
-    image.resize({ w: width, h: height });
-  } else if (width !== undefined) {
-    image.resize({ w: width });
-  } else if (height !== undefined) {
-    image.resize({ h: height });
-  }
-  return image;
-}
-
-/**
- * Build the per-format encode options passed to `getBuffer()`.
- * Jimp v1.x exposes quality / compression knobs via these options
- * rather than via chainable instance methods.
- */
-function buildEncodeOptions(
-  mime: string,
-  opts: NormalizedOptions,
-): Record<string, unknown> | undefined {
-  switch (mime) {
-    case "image/jpeg":
-    case "image/tiff":
-      return { quality: opts.quality };
-    case "image/png":
-      return { deflateLevel: opts.deflateLevel, deflateStrategy: 3 };
-    case "image/avif":
-      // AVIF uses `cqLevel` (libavif quantization) where LOWER = better
-      // quality, opposite to JPEG's "higher = better". We invert our
-      // user-facing 1–100 scale so the API stays consistent: passing
-      // quality=100 → cqLevel=1 (visually lossless), quality=1 → cqLevel=63
-      // (worst). The mapping is linear across the libavif range [1, 63].
-      return { cqLevel: Math.round(63 - ((opts.quality - 1) * 62) / 99) };
-    case "image/bmp":
-    case "image/gif":
-    default:
-      return undefined;
-  }
+function formatToInputMime(format: string): string {
+  const f = format.toLowerCase();
+  const map: Record<string, string> = {
+    png: "image/png",
+    jpeg: "image/jpeg",
+    jpg: "image/jpeg",
+    bmp: "image/bmp",
+    tiff: "image/tiff",
+    gif: "image/gif",
+    webp: "image/webp",
+    avif: "image/avif",
+  };
+  return map[f] ?? `image/${f}`;
 }
