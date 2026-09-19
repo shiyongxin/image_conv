@@ -1,0 +1,191 @@
+{
+  "name": "Image Convert - AVIF/WebP to JPEG (Direct Binary)",
+  "nodes": [
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "filename",
+              "value": "={{ $binary.data.fileName }}"
+            },
+            {
+              "name": "mimeType",
+              "value": "={{ $binary.data.mimeType }}"
+            },
+            {
+              "name": "inputFormat",
+              "value": "={{ $binary.data.mimeType.replace('image/', '') }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a2a9fddd-578b-4bd9-98ce-c561bb15db0b",
+      "name": "Extract Metadata",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        528,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "check-avif",
+              "leftValue": "={{ $json.inputFormat }}",
+              "rightValue": "avif",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "check-webp",
+              "leftValue": "={{ $json.inputFormat }}",
+              "rightValue": "webp",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "812ecba5-6314-4c57-b428-1cd64cdc5bf8",
+      "name": "Check Format (AVIF/WebP)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        752,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://172.17.0.1:3028/v1/convert?format=jpeg&width=800&quality=85",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c18a4ca9-9bd2-481e-842f-821fb4375bab",
+      "name": "Convert to JPEG",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        976,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://www.satbb.com/wp-content/uploads/sites/3/2026/09/test_image.webp",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Cookie",
+              "value": "={{ $json.cookieString }}"
+            },
+            {
+              "name": "User-Agent",
+              "value": "={{ $json.userAgent }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        304,
+        -80
+      ],
+      "id": "682b42ef-75a0-409d-8d0f-e760bd6c0258",
+      "name": "HTTP Request",
+      "onError": "continueErrorOutput"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Extract Metadata": {
+      "main": [
+        [
+          {
+            "node": "Check Format (AVIF/WebP)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Format (AVIF/WebP)": {
+      "main": [
+        [
+          {
+            "node": "Convert to JPEG",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Convert to JPEG": {
+      "main": [
+        []
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Extract Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "604fb552-a54b-4085-9ccf-ac4285e52cb1",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "2c99c8955578f178c53a068c918bb623fa2a82a082c2517f6687769e17cbf7f5"
+  },
+  "nodeGroups": [],
+  "id": "zJeNAhPyRxaHk2va",
+  "tags": []
+}
